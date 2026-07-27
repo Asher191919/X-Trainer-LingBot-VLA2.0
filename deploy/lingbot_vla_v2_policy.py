@@ -350,13 +350,18 @@ class LingbotVLAv2Server:
         self.last_action_chunk = None
         self.last_normalized_action_chunk = None
 
-        robot_config = f'configs/robot_configs/{robo_name}.yaml'
+        robot_config = PROJECT_ROOT / 'configs' / 'robot_configs' / f'{robo_name}.yaml'
+        norm_stats_path = self.robot_norm_path
+        if norm_stats_path is not None and not Path(norm_stats_path).is_absolute():
+            project_norm_stats_path = PROJECT_ROOT / norm_stats_path
+            if project_norm_stats_path.exists():
+                norm_stats_path = project_norm_stats_path
         
         with open(robot_config, 'r') as f:
-          self.robot_config = yaml.safe_load(f)
+            self.robot_config = yaml.safe_load(f)
 
         feature_transform = FeatureTransform(robot_config, self.data_config, self.config, self.processor,\
-                    chunk_size=self.config.chunk_size, norm_stats_path=self.robot_norm_path)
+                chunk_size=self.config.chunk_size, norm_stats_path=norm_stats_path)
         # Load data processors
         self.vla.feature_transform = feature_transform
         self.action_key = feature_transform.org_features["actions"]
