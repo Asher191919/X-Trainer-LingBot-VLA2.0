@@ -1,0 +1,98 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+*.pyd
+
+# Distribution / packaging
+build/
+dist/
+downloads/
+eggs/
+.eggs/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+pip-delete-this-directory.txt
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Pytest
+.pytest_cache/
+
+# Type check / caches
+.mypy_cache/
+.pyre/
+.pytype/
+
+# VS Code
+.vscode/
+
+# JetBrains
+.idea/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs and databases
+*.log
+*.sql
+*.sqlite3
+*.db
+
+# Coverage
+.coverage
+coverage.xml
+htmlcov/
+
+# Sphinx
+docs/_build/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# TensorBoard, logs, training outputs and model weights
+runs/
+logs/
+tensorboard/
+tb_logs/
+*.ckpt
+*.pt
+*.pth
+*.h5
+*.npy
+*.npz
+
+# Large data / model caches
+*.bin
+*.model
+*.ckpt.tar
+
+# Docker
+.envrc
+.dockerignore
+
+# Visual Studio / other editors
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Temporary files
+*.swp
+*~
+
+# Ignore dataset and large training files (uncomment if you store datasets outside VCS)
+# assets/training_data/
+# data/
