@@ -51,7 +51,14 @@ xtrainer /path/to/lerobot_dataset_b
 
 ### 全参微调
 
-训练配置和命令将在后续补充。
+全参训练配置位于 [`configs/vla/xtrainer/xtrainer.yaml`](configs/vla/xtrainer/xtrainer.yaml)。启动前需要填写模型、tokenizer、深度/视频教师、数据集和输出目录的实际路径。
+
+```bash
+bash train.sh tasks/vla/train_lingbotvla.py \
+  ./configs/vla/xtrainer/xtrainer.yaml
+```
+
+脚本默认使用当前可见的全部 GPU。`global_batch_size` 会根据 GPU 进程数、`micro_batch_size` 和 `gradient_accumulation_steps` 自动计算。
 
 ### LoRA
 
