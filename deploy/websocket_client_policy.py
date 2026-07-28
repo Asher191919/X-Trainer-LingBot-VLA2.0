@@ -60,6 +60,9 @@ class WebsocketClientPolicy:
     def reset(self, robo_name: str) -> None:
         self.infer(dict(reset=True, robo_name=robo_name))
 
+    def close(self) -> None:
+        self._ws.close()
+
 def _optional_float_env(name: str) -> Optional[float]:
     value = os.environ.get(name)
     if value is None or value.lower() == "none":

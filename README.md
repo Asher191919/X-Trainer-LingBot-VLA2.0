@@ -95,13 +95,12 @@ python scripts/serve_policy.py \
 | `--fp32`       | 关闭             | 使用 FP32；默认使用 BF16                                   |
 | `--compile`    | 关闭             | 使用`torch.compile` 加速推理                               |
 
-例如，启用逐步动作返回和 `torch.compile`：
+例如，启用 `torch.compile` 并返回 50 步 action chunk：
 
 ```bash
 python scripts/serve_policy.py \
   --model-path /path/to/checkpoint \
   --robot xtrainer \
-  --step-mode \
   --use-length 50 \
   --compile \
   --port 8000
@@ -115,6 +114,19 @@ from deploy.websocket_client_policy import WebsocketClientPolicy
 policy = WebsocketClientPolicy(host="127.0.0.1", port=8000)
 result = policy.infer(observation)
 ```
+
+仓库还提供了最小 Linux 真机客户端，它直接复用上述 WebSocket 客户端，并在本地消费 action chunk：
+
+```bash
+python scripts/run_xtrainer_real.py \
+  --host 192.168.1.10 \
+  --task "fold the clothes" \
+  --camera-top-serial TOP_SERIAL \
+  --camera-left-wrist-serial LEFT_WRIST_SERIAL \
+  --camera-right-wrist-serial RIGHT_WRIST_SERIAL
+```
+
+真机客户端要求服务端保持默认 chunk 模式，并且服务端 `--use-length` 不小于客户端 `--action-horizon`。硬件参数、独立依赖和首次真机测试步骤见 `deploy/xtrainer_real/README.md`。
 
 `observation` 的字段需要与所选机器人 YAML 中的 `origin_keys` 对齐。对于默认的 `xtrainer` 配置，输入包括：
 

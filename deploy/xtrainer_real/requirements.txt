@@ -1,0 +1,7 @@
+msgpack>=1.0.5
+numpy>=1.22.4,<2.0.0
+pillow>=9.0.0
+pyrealsense2
+pyserial
+typing-extensions>=4.0.0
+websockets>=11.0
