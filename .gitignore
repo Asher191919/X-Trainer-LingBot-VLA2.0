@@ -96,3 +96,4 @@ tb_logs/
 # Ignore dataset and large training files (uncomment if you store datasets outside VCS)
 # assets/training_data/
 # data/
+models/

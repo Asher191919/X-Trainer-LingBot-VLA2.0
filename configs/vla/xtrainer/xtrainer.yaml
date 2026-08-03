@@ -86,7 +86,7 @@ train:
     depth:
       model_type: MoRGBD
       moge_path: ./models/MoRGBD/moge2-vitb-normal.pt
-      morgbd_path: ./models/MoRGBD/model.pt
+      morgbd_path: ./models/lingbot-vla-v2-6b/depth/model.pt
       num_layers: 1
       num_heads: 4
       dim_head: 32
@@ -99,8 +99,8 @@ train:
       block_future_depth_to_action: true
       detach_future_image_feats: true
     video:
-      ckpt_path: ./models/video-dino/teacher_step_10000.pth
-      config_path: ./models/video-dino/config.yaml
+      ckpt_path: ./models/lingbot-vla-v2-6b/dino_video/teacher_step_10000.pth
+      config_path: ./models/lingbot-vla-v2-6b/dino_video/config.yaml
       attention_mode: flex_block_causal
       input_size: 256
       block_suffix_to_future_video: true
