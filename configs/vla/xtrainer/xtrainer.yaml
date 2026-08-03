@@ -1,6 +1,6 @@
 model:
-  model_path: /path/to/lingbot-vla-v2-6b/hf_ckpt
-  tokenizer_path: /path/to/Qwen3-VL-4B-Instruct
+  model_path: ./models/lingbot-vla-v2-6b
+  tokenizer_path: ./models/Qwen3-VL-4B-Instruct
   post_training: true
   adanorm_time: true
   config_key: LingbotVLAV2Config
@@ -85,8 +85,8 @@ train:
       image_input_size: 224
     depth:
       model_type: MoRGBD
-      moge_path: /path/to/depth/moge2-vitb-normal.pt
-      morgbd_path: /path/to/depth/model.pt
+      moge_path: ./models/MoRGBD/moge2-vitb-normal.pt
+      morgbd_path: ./models/MoRGBD/model.pt
       num_layers: 1
       num_heads: 4
       dim_head: 32
@@ -99,8 +99,8 @@ train:
       block_future_depth_to_action: true
       detach_future_image_feats: true
     video:
-      ckpt_path: /path/to/video-dino/teacher_step_10000.pth
-      config_path: /path/to/video-dino/config.yaml
+      ckpt_path: ./models/video-dino/teacher_step_10000.pth
+      config_path: ./models/video-dino/config.yaml
       attention_mode: flex_block_causal
       input_size: 256
       block_suffix_to_future_video: true
