@@ -318,6 +318,10 @@ class MyDataArguments(DataArguments):
         default=False,
         metadata={"help": "Whether to use future image."},
     )
+    video_backend: Literal["torchcodec", "pyav", "video_reader"] = field(
+        default="torchcodec",
+        metadata={"help": "Backend used to decode LeRobot video frames."},
+    )
 
 
 @dataclass
