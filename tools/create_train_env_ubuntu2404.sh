@@ -14,6 +14,7 @@ RECREATE=0
 RESUME=0
 SKIP_SYSTEM_CHECK=0
 FORCE_BUILD_FLASH_ATTN=0
+CURRENT_STAGE="initialization"
 FLASH_ATTN_WHEEL="${FLASH_ATTN_WHEEL:-}"
 FLASH_BUILD_JOBS="${FLASH_BUILD_JOBS:-8}"
 TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}"
@@ -46,10 +47,19 @@ die() {
   exit 1
 }
 
+stage_begin() {
+  CURRENT_STAGE="$1"
+  log "stage start: ${CURRENT_STAGE}"
+}
+
+stage_done() {
+  log "stage done: ${CURRENT_STAGE}"
+}
+
 on_error() {
   local exit_code=$?
-  printf '[lingbot-env] ERROR: command failed at line %s (exit %s): %s\n' \
-    "${BASH_LINENO[0]:-unknown}" "${exit_code}" "${BASH_COMMAND:-unknown}" >&2
+  printf '[lingbot-env] ERROR: stage=%s line=%s (exit %s): %s\n' \
+    "${CURRENT_STAGE:-unknown}" "${BASH_LINENO[0]:-unknown}" "${exit_code}" "${BASH_COMMAND:-unknown}" >&2
   exit "${exit_code}"
 }
 trap on_error ERR
@@ -151,7 +161,30 @@ require_command() {
 version_ge() {
   local actual="$1"
   local minimum="$2"
-  [[ "$(printf '%s\n%s\n' "${minimum}" "${actual}" | sort -V | head -n 1)" == "${minimum}" ]]
+  local -a actual_parts minimum_parts
+  local IFS=.
+  read -r -a actual_parts <<<"${actual}"
+  read -r -a minimum_parts <<<"${minimum}"
+
+  local i max_parts actual_part minimum_part
+  max_parts=${#actual_parts[@]}
+  if (( ${#minimum_parts[@]} > max_parts )); then
+    max_parts=${#minimum_parts[@]}
+  fi
+
+  for ((i = 0; i < max_parts; i++)); do
+    actual_part="${actual_parts[i]:-0}"
+    minimum_part="${minimum_parts[i]:-0}"
+
+    if ((10#${actual_part} > 10#${minimum_part})); then
+      return 0
+    fi
+    if ((10#${actual_part} < 10#${minimum_part})); then
+      return 1
+    fi
+  done
+
+  return 0
 }
 
 preflight_system() {
@@ -171,13 +204,19 @@ preflight_system() {
 
   require_command ldd
   local glibc_version
-  glibc_version="$(ldd --version | head -n 1 | awk '{print $NF}')"
+  local glibc_version_line
+  glibc_version_line="$(ldd --version 2>/dev/null)"
+  glibc_version_line="${glibc_version_line%%$'\n'*}"
+  glibc_version="${glibc_version_line##* }"
   version_ge "${glibc_version}" "2.39" || \
     die "glibc >=2.39 is required for this Ubuntu 24.04 environment; detected ${glibc_version}"
 
   require_command nvidia-smi
   local driver_version
-  driver_version="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n 1 | tr -d '[:space:]')"
+  local driver_version_output
+  driver_version_output="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null)"
+  driver_version_output="${driver_version_output%%$'\n'*}"
+  driver_version="${driver_version_output//[[:space:]]/}"
   [[ -n "${driver_version}" ]] || die "could not read the NVIDIA driver version"
   version_ge "${driver_version}" "${MIN_DRIVER_VERSION}" || \
     die "NVIDIA driver >=${MIN_DRIVER_VERSION} is required for CUDA 12.8; detected ${driver_version}"
@@ -211,7 +250,13 @@ prepare_source_build() {
   [[ -x "${CUDA_HOME}/bin/nvcc" ]] || die "nvcc not found under CUDA_HOME=${CUDA_HOME}"
 
   local nvcc_release
-  nvcc_release="$(${CUDA_HOME}/bin/nvcc --version | sed -n 's/.*release \([0-9][0-9.]*\).*/\1/p' | head -n 1)"
+  local nvcc_version_output
+  nvcc_version_output="$(${CUDA_HOME}/bin/nvcc --version 2>/dev/null)"
+  if [[ "${nvcc_version_output}" =~ release[[:space:]]([0-9][0-9.]*), ]]; then
+    nvcc_release="${BASH_REMATCH[1]}"
+  else
+    die "could not parse nvcc version"
+  fi
   [[ -n "${nvcc_release}" ]] || die "could not parse nvcc version"
   version_ge "${nvcc_release}" "12.8" || \
     die "local FlashAttention build requires CUDA toolkit >=12.8; detected ${nvcc_release}"
@@ -369,44 +414,71 @@ require_command git
 require_command sort
 
 if [[ "${SKIP_SYSTEM_CHECK}" == "0" ]]; then
+  stage_begin "system preflight"
   preflight_system
+  stage_done
 else
   warn "Ubuntu, glibc, driver, and GPU preflight checks were skipped"
 fi
 
+stage_begin "conda bootstrap"
 eval "$(conda shell.bash hook)"
 
 ENV_EXISTS=0
-if conda env list | awk 'NF && $1 !~ /^#/ {print $1}' | grep -Fxq "${ENV_NAME}"; then
+ENV_LIST_JSON="$(conda env list --json)"
+if python3 - "${ENV_NAME}" "${ENV_LIST_JSON}" <<'PY'
+import json
+import sys
+
+name = sys.argv[1]
+envs = json.loads(sys.argv[2]).get("envs", [])
+
+for env_path in envs:
+    if env_path.rsplit("/", 1)[-1] == name:
+        raise SystemExit(0)
+
+raise SystemExit(1)
+PY
+then
   ENV_EXISTS=1
 fi
 
 if [[ "${ENV_EXISTS}" == "1" ]]; then
   if [[ "${RECREATE}" == "1" ]]; then
+    stage_begin "remove existing conda environment"
     log "removing existing Conda environment: ${ENV_NAME}"
     conda env remove -n "${ENV_NAME}" -y
     ENV_EXISTS=0
+    stage_done
   elif [[ "${RESUME}" == "1" ]]; then
+    stage_begin "reuse existing conda environment"
     log "reconciling existing Conda environment: ${ENV_NAME}"
+    stage_done
   else
     die "Conda environment already exists: ${ENV_NAME}; use --resume or --recreate"
   fi
 fi
 
 if [[ "${ENV_EXISTS}" == "0" ]]; then
+  stage_begin "create conda environment"
   log "creating Conda environment ${ENV_NAME} with Python ${PYTHON_VERSION}"
   conda create -n "${ENV_NAME}" "python=${PYTHON_VERSION}" pip -y
+  stage_done
 fi
 
 conda activate "${ENV_NAME}"
 assert_python_version
+stage_done
 
+stage_begin "bootstrap Python tooling"
 log "installing pinned Python build tools"
 python -m pip install --no-cache-dir --upgrade \
   "pip==25.1.1" \
   "setuptools==80.9.0" \
   "wheel==0.45.1"
+stage_done
 
+stage_begin "install PyTorch stack"
 log "installing PyTorch ${TORCH_VERSION} from ${TORCH_INDEX_URL}"
 python -m pip install --no-cache-dir --index-url "${TORCH_INDEX_URL}" \
   "torch==${TORCH_VERSION}" \
@@ -424,7 +496,9 @@ assert torch.version.cuda == "12.8", torch.version.cuda
 assert torch.cuda.is_available(), "PyTorch cannot access CUDA"
 print("torch bootstrap ok", torch.__version__, torch.version.cuda)
 PY
+stage_done
 
+stage_begin "install core repository requirements"
 log "installing LingBot-VLA core requirements"
 python -m pip install --no-cache-dir -r "${REPO_ROOT}/requirements.txt"
 
@@ -438,10 +512,14 @@ python -m pip install --no-cache-dir -r "${REPO_ROOT}/requirements.txt"
 python -m pip install --no-cache-dir --no-deps "numpydantic==1.9.0"
 python -m pip install --no-cache-dir "huggingface-hub==${HUGGINGFACE_HUB_VERSION}"
 assert_core_stack
+stage_done
 
+stage_begin "install FlashAttention"
 install_flash_attention
 assert_core_stack
+stage_done
 
+stage_begin "install LeRobot and local vision packages"
 log "installing LeRobot ${LEROBOT_VERSION} without its incompatible resolver constraints"
 python -m pip install --no-cache-dir --no-deps \
   "lerobot @ https://github.com/huggingface/lerobot/archive/refs/tags/v${LEROBOT_VERSION}.tar.gz"
@@ -461,9 +539,12 @@ install_local_vision_packages
 python -m pip install --no-cache-dir --no-deps \
   "transformers==${TRANSFORMERS_VERSION}" \
   "huggingface-hub==${HUGGINGFACE_HUB_VERSION}"
+stage_done
 
+stage_begin "validate environment"
 log "validating the complete environment"
 validate_environment
+stage_done
 
 log "environment ready: ${ENV_NAME}"
 log "activate with: conda activate ${ENV_NAME}"
