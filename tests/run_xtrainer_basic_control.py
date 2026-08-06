@@ -135,9 +135,39 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("Open and close gripper positions must differ")
 
 
+def _preflight_cameras(serials: tuple[str, str, str]) -> None:
+    """Fail before enabling any robot when a required USB camera is unavailable."""
+    try:
+        import pyrealsense2 as rs
+    except ImportError as exc:
+        raise RuntimeError("pyrealsense2 is required on the control computer") from exc
+
+    connected = {}
+    for device in rs.context().query_devices():
+        serial = device.get_info(rs.camera_info.serial_number)
+        name = device.get_info(rs.camera_info.name)
+        connected[serial] = name
+
+    missing = [serial for serial in serials if serial not in connected]
+    if missing:
+        discovered = ", ".join(f"{name} ({serial})" for serial, name in connected.items()) or "none"
+        raise RuntimeError(
+            "RealSense preflight failed before enabling robots. "
+            f"Missing serials: {', '.join(missing)}. USB cameras visible on this computer: {discovered}"
+        )
+    logging.info("RealSense preflight passed: %s", ", ".join(serials))
+
+
 def main() -> None:
     args = parse_args()
     _validate_args(args)
+    _preflight_cameras(
+        (
+            args.camera_top_serial,
+            args.camera_left_wrist_serial,
+            args.camera_right_wrist_serial,
+        )
+    )
     logging.warning(
         "The existing hardware interface initializes each gripper during connection before the explicit test sequence"
     )

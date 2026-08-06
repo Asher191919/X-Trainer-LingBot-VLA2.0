@@ -120,10 +120,10 @@ result = policy.infer(observation)
 ```bash
 python scripts/run_xtrainer_real.py \
   --host 192.168.1.10 \
-  --task "fold the clothes" \
-  --camera-top-serial TOP_SERIAL \
-  --camera-left-wrist-serial LEFT_WRIST_SERIAL \
-  --camera-right-wrist-serial RIGHT_WRIST_SERIAL
+  --task "Sort the items on the desktop" \
+  --camera-top-serial 409122273405 \
+  --camera-left-wrist-serial 412622272997 \
+  --camera-right-wrist-serial 412622271417 \
 ```
 
 当服务端和控制端不在同一台电脑时，服务端使用 `--host 0.0.0.0`，客户端的 `--host` 填服务端的局域网或 VPN IP，不能填 `127.0.0.1`。可先在控制机执行 `curl http://SERVER_IP:8000/healthz` 验证网络。
