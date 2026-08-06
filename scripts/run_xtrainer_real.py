@@ -99,6 +99,8 @@ def main() -> None:
         raise RuntimeError(f"Unexpected model type: {metadata.get('model_type')}")
     if metadata.get("robot") not in (None, "xtrainer"):
         raise RuntimeError(f"Unexpected robot config: {metadata.get('robot')}")
+    if metadata.get("mock_policy"):
+        logging.warning("Connected to a mock hold-current policy; no learned actions will be executed")
 
     environment = XTrainerRealEnvironment(
         left_robot_ip=args.left_robot_ip,

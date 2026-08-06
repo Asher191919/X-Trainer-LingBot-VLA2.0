@@ -126,6 +126,10 @@ python scripts/run_xtrainer_real.py \
   --camera-right-wrist-serial RIGHT_WRIST_SERIAL
 ```
 
+当服务端和控制端不在同一台电脑时，服务端使用 `--host 0.0.0.0`，客户端的 `--host` 填服务端的局域网或 VPN IP，不能填 `127.0.0.1`。可先在控制机执行 `curl http://SERVER_IP:8000/healthz` 验证网络。
+
+在模型服务尚未启动时，可以先用 `tests/run_xtrainer_basic_control.py` 依次测试每个关节和夹爪，或用 `scripts/serve_mock_policy.py` 演练完整 WebSocket 控制链路。具体命令与安全说明见 `deploy/xtrainer_real/README.md`。
+
 真机客户端要求服务端保持默认 chunk 模式，并且服务端 `--use-length` 不小于客户端 `--action-horizon`。硬件参数、独立依赖和首次真机测试步骤见 `deploy/xtrainer_real/README.md`。
 
 `observation` 的字段需要与所选机器人 YAML 中的 `origin_keys` 对齐。对于默认的 `xtrainer` 配置，输入包括：
