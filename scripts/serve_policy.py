@@ -13,6 +13,31 @@ from deploy.lingbot_vla_v2_policy import LingbotVLAv2Server
 from deploy.websocket_policy_server import WebsocketPolicyServer
 
 
+XTRAINER_RESET_POSE = (
+    -1.57,
+    0.0,
+    -1.57,
+    0.0,
+    1.57,
+    1.57,
+    1.0,
+    1.57,
+    0.0,
+    1.57,
+    0.0,
+    -1.57,
+    -1.57,
+    1.0,
+)
+
+
+def _build_server_metadata(robot: str) -> dict:
+    metadata = {"model_type": "lingbot-vla-2.0", "robot": robot}
+    if robot == "xtrainer":
+        metadata["reset_pose"] = list(XTRAINER_RESET_POSE)
+    return metadata
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Serve a LingBot-VLA 2.0 checkpoint over WebSocket")
     parser.add_argument("--model-path", "--model_path", required=True, help="Checkpoint directory containing safetensors")
@@ -66,7 +91,7 @@ def main() -> None:
         policy=policy,
         host=args.host,
         port=args.port,
-        metadata={"model_type": "lingbot-vla-2.0", "robot": args.robot},
+        metadata=_build_server_metadata(args.robot),
     )
     server.serve_forever()
 
