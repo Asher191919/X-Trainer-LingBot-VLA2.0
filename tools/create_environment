@@ -12,7 +12,8 @@ export PIP_DISABLE_PIP_VERSION_CHECK=1
 ENV_NAME="lingbotvla"
 RECREATE=0
 RESUME=0
-SKIP_SYSTEM_CHECK=0
+SKIP_SYSTEM_CHECK=1
+STRICT_SYSTEM_CHECK=0
 FORCE_BUILD_FLASH_ATTN=0
 CURRENT_STAGE="initialization"
 FLASH_ATTN_WHEEL="${FLASH_ATTN_WHEEL:-}"
@@ -66,7 +67,7 @@ trap on_error ERR
 
 usage() {
   cat <<'USAGE'
-Usage: bash tools/create_train_env_ubuntu2404.sh [OPTIONS]
+Usage: bash tools/create_environment [OPTIONS]
 
 Create the complete LingBot-VLA 2.0 Python environment for Ubuntu 24.04:
   - Python 3.12
@@ -77,7 +78,8 @@ Create the complete LingBot-VLA 2.0 Python environment for Ubuntu 24.04:
   - LingBot depth, MoGe, and their runtime dependencies
 
 The script does not install OS packages, NVIDIA drivers/CUDA toolkit, models,
-or datasets.
+or datasets. System checks are advisory and skipped by default; use
+--strict-system-check to enforce them.
 
 Options:
   --env-name NAME              Conda environment name (default: lingbotvla)
@@ -86,7 +88,8 @@ Options:
   --flash-attn-wheel PATH      Install a local FlashAttention wheel
   --force-build-flash-attn     Compile FlashAttention locally with nvcc
   --max-build-jobs N           Parallel jobs for a local FA build (default: 8)
-  --skip-system-check          Skip Ubuntu/driver/GPU preflight checks
+  --skip-system-check          Skip Ubuntu/driver/GPU preflight checks (default)
+  --strict-system-check        Fail when the preflight detects unsupported system settings
   -h, --help                   Show this help
 
 Environment overrides:
@@ -95,9 +98,9 @@ Environment overrides:
   TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
 
 Examples:
-  bash tools/create_train_env_ubuntu2404.sh --recreate
-  bash tools/create_train_env_ubuntu2404.sh --resume
-  bash tools/create_train_env_ubuntu2404.sh \
+  bash tools/create_environment --recreate
+  bash tools/create_environment --resume
+  bash tools/create_environment \
     --flash-attn-wheel /path/to/flash_attn-2.8.3+cu12torch2.8cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
 USAGE
 }
@@ -133,6 +136,12 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-system-check)
       SKIP_SYSTEM_CHECK=1
+      STRICT_SYSTEM_CHECK=0
+      shift
+      ;;
+    --strict-system-check)
+      STRICT_SYSTEM_CHECK=1
+      SKIP_SYSTEM_CHECK=0
       shift
       ;;
     -h|--help)
@@ -156,6 +165,10 @@ done
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+check_command() {
+  command -v "$1" >/dev/null 2>&1
 }
 
 version_ge() {
@@ -188,52 +201,87 @@ version_ge() {
 }
 
 preflight_system() {
+  local system_ok=1
+
   if [[ "$(uname -s)" != "Linux" ]]; then
-    die "this environment targets Linux; detected $(uname -s)"
+    warn "this script targets Linux; detected $(uname -s); continuing"
+    system_ok=0
   fi
   if [[ "$(uname -m)" != "x86_64" ]]; then
-    die "this environment targets x86_64; detected $(uname -m)"
+    warn "this script targets x86_64; detected $(uname -m); continuing"
+    system_ok=0
   fi
 
-  [[ -r /etc/os-release ]] || die "/etc/os-release is not readable"
-  # shellcheck disable=SC1091
-  source /etc/os-release
-  if [[ "${ID:-}" != "ubuntu" || "${VERSION_ID:-}" != "24.04" ]]; then
-    die "expected Ubuntu 24.04, detected ${PRETTY_NAME:-unknown}; use --skip-system-check to override"
-  fi
-
-  require_command ldd
-  local glibc_version
-  local glibc_version_line
-  glibc_version_line="$(ldd --version 2>/dev/null)"
-  glibc_version_line="${glibc_version_line%%$'\n'*}"
-  glibc_version="${glibc_version_line##* }"
-  version_ge "${glibc_version}" "2.39" || \
-    die "glibc >=2.39 is required for this Ubuntu 24.04 environment; detected ${glibc_version}"
-
-  require_command nvidia-smi
-  local driver_version
-  local driver_version_output
-  driver_version_output="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null)"
-  driver_version_output="${driver_version_output%%$'\n'*}"
-  driver_version="${driver_version_output//[[:space:]]/}"
-  [[ -n "${driver_version}" ]] || die "could not read the NVIDIA driver version"
-  version_ge "${driver_version}" "${MIN_DRIVER_VERSION}" || \
-    die "NVIDIA driver >=${MIN_DRIVER_VERSION} is required for CUDA 12.8; detected ${driver_version}"
-
-  local compute_caps
-  if compute_caps="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null)"; then
-    while IFS= read -r compute_cap; do
-      compute_cap="$(printf '%s' "${compute_cap}" | tr -d '[:space:]')"
-      [[ -z "${compute_cap}" ]] && continue
-      awk -v cap="${compute_cap}" 'BEGIN { exit !(cap + 0 >= 8.0) }' || \
-        die "FlashAttention 2 requires compute capability >=8.0; detected ${compute_cap}"
-    done <<<"${compute_caps}"
+  if [[ ! -r /etc/os-release ]]; then
+    warn "/etc/os-release is not readable; OS validation skipped"
+    system_ok=0
   else
-    warn "nvidia-smi cannot report compute capability; the post-install CUDA check will validate the GPU"
+    # shellcheck disable=SC1091
+    source /etc/os-release
+    if [[ "${ID:-}" != "ubuntu" || "${VERSION_ID:-}" != "24.04" ]]; then
+      warn "recommended Ubuntu 24.04; detected ${PRETTY_NAME:-unknown}; continuing"
+      system_ok=0
+    fi
   fi
 
-  log "system: ${PRETTY_NAME}; glibc ${glibc_version}; NVIDIA driver ${driver_version}"
+  if check_command ldd; then
+    local glibc_version
+    local glibc_version_line
+    glibc_version_line="$(ldd --version 2>/dev/null)"
+    glibc_version_line="${glibc_version_line%%$'\n'*}"
+    glibc_version="${glibc_version_line##* }"
+    if ! version_ge "${glibc_version}" "2.39"; then
+      warn "glibc >=2.39 is recommended for this environment; detected ${glibc_version}"
+      system_ok=0
+    fi
+  else
+    warn "ldd is not available; glibc validation skipped"
+    system_ok=0
+  fi
+
+  local driver_version=""
+  local driver_version_output=""
+  if check_command nvidia-smi; then
+    if driver_version_output="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null)"; then
+      driver_version_output="${driver_version_output%%$'\n'*}"
+      driver_version="${driver_version_output//[[:space:]]/}"
+      if [[ -n "${driver_version}" ]]; then
+        if ! version_ge "${driver_version}" "${MIN_DRIVER_VERSION}"; then
+          warn "NVIDIA driver >=${MIN_DRIVER_VERSION} is recommended for CUDA 12.8; detected ${driver_version}"
+          system_ok=0
+        fi
+      else
+        warn "could not read the NVIDIA driver version"
+        system_ok=0
+      fi
+    else
+      warn "nvidia-smi could not report the driver version; GPU validation skipped"
+      system_ok=0
+    fi
+
+    local compute_caps
+    if compute_caps="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null)"; then
+      while IFS= read -r compute_cap; do
+        compute_cap="$(printf '%s' "${compute_cap}" | tr -d '[:space:]')"
+        [[ -z "${compute_cap}" ]] && continue
+        if ! awk -v cap="${compute_cap}" 'BEGIN { exit !(cap + 0 >= 8.0) }'; then
+          warn "FlashAttention 2 recommends compute capability >=8.0; detected ${compute_cap}"
+          system_ok=0
+        fi
+      done <<<"${compute_caps}"
+    else
+      warn "nvidia-smi cannot report compute capability; the post-install CUDA check will validate the GPU"
+    fi
+  else
+    warn "nvidia-smi is not available; GPU/driver validation skipped"
+    system_ok=0
+  fi
+
+  if [[ "${STRICT_SYSTEM_CHECK}" == "1" && "${system_ok}" == "0" ]]; then
+    die "strict system checks failed; rerun without --strict-system-check to continue with warnings"
+  fi
+
+  log "system checks: advisory mode; ${PRETTY_NAME:-unknown}; continue with the requested environment setup"
 }
 
 prepare_source_build() {

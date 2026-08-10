@@ -6,16 +6,38 @@
 
 通用机器人配置为 [`configs/robot_configs/xtrainer.yaml`](configs/robot_configs/xtrainer.yaml)，要求 LeRobot v2.1 数据集包含以下字段：
 
-
-| 字段                             | 形状    | 含义                                        |
-| ---------------------------------- | --------- | --------------------------------------------- |
+| 字段                               | 形状      | 含义                                        |
+| ---------------------------------- | --------- | ------------------------------------------- |
 | `observation.state`              | `(14,)` | 左臂 6 关节 + 左夹爪 + 右臂 6 关节 + 右夹爪 |
-| `action`                         | `(14,)` | 维度顺序与`observation.state` 相同          |
-| `observation.images.top`         | image   | 顶部相机                                    |
-| `observation.images.left_wrist`  | image   | 左腕相机                                    |
-| `observation.images.right_wrist` | image   | 右腕相机                                    |
+| `action`                         | `(14,)` | 维度顺序与`observation.state` 相同        |
+| `observation.images.top`         | image     | 顶部相机                                    |
+| `observation.images.left_wrist`  | image     | 左腕相机                                    |
+| `observation.images.right_wrist` | image     | 右腕相机                                    |
 
 动作处理与 X-Trainer Pi0.5-JAX 保持一致：12 维机械臂关节动作由绝对目标转换为 delta action，两个夹爪动作保持 absolute。
+
+## 推荐环境与配置
+
+建议按下面的组合准备环境：
+
+### 推理推荐配置
+
+- 操作系统：Ubuntu 24.04 LTS（x86_64）或其他 Linux 发行版
+- Python：3.12
+- CUDA / PyTorch：CUDA 12.8 + PyTorch 2.8.0
+- GPU：至少需要支持 Compute Capability 8.0 的 NVIDIA GPU；服务端推理建议至少 24GB 显存。
+
+### 训练推荐配置
+
+- 训练环境建议与脚本一致：Ubuntu 24.04 + Python 3.12 + CUDA 12.8 + PyTorch 2.8.0。
+- 全参微调建议使用至少 2×80GB H100/A100 或 4×48GB L40S/4090 级别 GPU；
+- 训练时建议使用 BF16，并根据当前可见 GPU 自动调节批大小。默认训练脚本会根据 GPU 数量和配置推导 `global_batch_size`。
+
+本仓库提供环境安装脚本，位于 [tools/create_environment](tools/create_environment)，可用如下命令创建环境：
+
+```bash
+bash tools/create_environment --recreate
+```
 
 ## 训练流程
 
@@ -82,18 +104,17 @@ python scripts/serve_policy.py \
 
 常用参数：
 
-
-| 参数           | 默认值           | 说明                                                       |
-| ---------------- | ------------------ | ------------------------------------------------------------ |
-| `--model-path` | 必填             | 包含`.safetensors` 权重的 checkpoint 目录                  |
-| `--robot`      | `xtrainer`       | `configs/robot_configs` 下的机器人配置名称，不包含 `.yaml` |
-| `--norm-path`  | 配置文件中的路径 | 覆盖 normalization statistics 文件路径                     |
-| `--host`       | `0.0.0.0`        | WebSocket 监听地址                                         |
-| `--port`       | `8000`           | WebSocket 监听端口                                         |
-| `--use-length` | `50`             | 每次模型前向后使用的动作数量                               |
-| `--step-mode`  | 关闭             | 每次请求仅返回一个动作；默认返回完整 action chunk          |
-| `--fp32`       | 关闭             | 使用 FP32；默认使用 BF16                                   |
-| `--compile`    | 关闭             | 使用`torch.compile` 加速推理                               |
+| 参数             | 默认值           | 说明                                                           |
+| ---------------- | ---------------- | -------------------------------------------------------------- |
+| `--model-path` | 必填             | 包含`.safetensors` 权重的 checkpoint 目录                    |
+| `--robot`      | `xtrainer`     | `configs/robot_configs` 下的机器人配置名称，不包含 `.yaml` |
+| `--norm-path`  | 配置文件中的路径 | 覆盖 normalization statistics 文件路径                         |
+| `--host`       | `0.0.0.0`      | WebSocket 监听地址                                             |
+| `--port`       | `8000`         | WebSocket 监听端口                                             |
+| `--use-length` | `50`           | 每次模型前向后使用的动作数量                                   |
+| `--step-mode`  | 关闭             | 每次请求仅返回一个动作；默认返回完整 action chunk              |
+| `--fp32`       | 关闭             | 使用 FP32；默认使用 BF16                                       |
+| `--compile`    | 关闭             | 使用`torch.compile` 加速推理                                 |
 
 例如，启用 `torch.compile` 并返回 50 步 action chunk：
 
