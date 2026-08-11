@@ -196,6 +196,7 @@ class LingbotVLAv2Server:
         use_bf16=True,
         use_fp32=False,
         use_compile=False,
+        num_steps: int = 10,
     ) -> None:
         assert not (use_bf16 and use_fp32), 'Bfloat16 or Float32!!!'
         self.adaptive_ensemble_alpha = adaptive_ensemble_alpha
@@ -203,6 +204,7 @@ class LingbotVLAv2Server:
         self.use_length = use_length
         self.chunk_ret = chunk_ret
         self.robot_norm_path = robot_norm_path
+        self.num_steps = num_steps
 
         self.task_description = None
 
@@ -307,6 +309,7 @@ class LingbotVLAv2Server:
         if 'vocab_size' in training_config['model'] and training_config['model']['vocab_size'] != 0:
             config.vocab_size = training_config['model']['vocab_size']
         # config.num_steps = 4
+        config.num_steps = self.num_steps  # denoise steps per action chunk (runtime override)
         config.use_cache = True # is necessary in inference
         # load processors
         self.processor = build_processor(base_model_path)

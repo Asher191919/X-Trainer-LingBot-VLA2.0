@@ -54,6 +54,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=8000, help="WebSocket listen port")
     parser.add_argument("--use-length", "--use_length", type=int, default=50, help="Actions consumed per model call")
     parser.add_argument(
+        "--num-steps",
+        "--num_steps",
+        type=int,
+        default=10,
+        help="Flow-matching denoising steps per action chunk (10 = training default; "
+        "4-6 cuts inference latency ~2-3x with minor quality loss)",
+    )
+    parser.add_argument(
         "--step-mode",
         action="store_true",
         help="Return one action per request instead of the full action chunk",
@@ -81,6 +89,7 @@ def main() -> None:
         use_bf16=not args.fp32,
         use_fp32=args.fp32,
         use_compile=args.compile,
+        num_steps=args.num_steps,
     )
     policy.reset(args.robot)
 
