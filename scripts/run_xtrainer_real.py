@@ -1,4 +1,5 @@
 import argparse
+from concurrent.futures import Future, ThreadPoolExecutor
 import logging
 import sys
 import time
@@ -39,6 +40,48 @@ def _extract_action_chunk(response: dict, action_horizon: int) -> np.ndarray:
     return actions[:action_horizon]
 
 
+def _rate_limit_action(action: np.ndarray, last_action: np.ndarray | None, max_delta_per_step: float) -> np.ndarray:
+    target = np.asarray(action, dtype=np.float64).reshape(-1).copy()
+    if last_action is None or max_delta_per_step <= 0:
+        return target
+    previous = np.asarray(last_action, dtype=np.float64).reshape(-1)
+    return previous + np.clip(target - previous, -max_delta_per_step, max_delta_per_step)
+
+
+def _smooth_chunk_boundary(
+    chunk: np.ndarray,
+    last_action: np.ndarray | None,
+    *,
+    max_switch_delta: float,
+    blend_steps: int,
+) -> np.ndarray:
+    smoothed = np.asarray(chunk, dtype=np.float64).copy()
+    if last_action is None or len(smoothed) == 0 or max_switch_delta <= 0:
+        return smoothed
+
+    previous = np.asarray(last_action, dtype=np.float64).reshape(-1)
+    delta = float(np.max(np.abs(smoothed[0] - previous)))
+    if delta <= max_switch_delta:
+        return smoothed
+
+    steps = min(max(blend_steps, 1), len(smoothed))
+    for index in range(steps):
+        weight = float(index + 1) / float(steps + 1)
+        smoothed[index] = previous + weight * (smoothed[index] - previous)
+    logging.warning(
+        "Blended action chunk boundary: max delta %.4f exceeded threshold %.4f over %d steps",
+        delta,
+        max_switch_delta,
+        steps,
+    )
+    return smoothed
+
+
+def _infer_action_chunk(policy: WebsocketClientPolicy, observation: dict, action_horizon: int) -> np.ndarray:
+    response = policy.infer(observation)
+    return _extract_action_chunk(response, action_horizon)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run LingBot-VLA 2.0 on an X-Trainer robot")
     parser.add_argument("--host", required=True, help="LingBot policy server address")
@@ -66,6 +109,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ramp-max-steps", type=int, default=100)
     parser.add_argument("--gripper-update-threshold", type=float, default=0.02)
     parser.add_argument("--servo-step-limit", type=float, default=0.9)
+    parser.add_argument(
+        "--prefetch-remaining",
+        type=int,
+        default=8,
+        help="Start background inference when this many actions remain in the current chunk; 0 disables prefetch",
+    )
+    parser.add_argument(
+        "--switch-blend-steps",
+        type=int,
+        default=5,
+        help="Number of actions used to blend across a large chunk-boundary jump",
+    )
+    parser.add_argument(
+        "--max-switch-delta",
+        type=float,
+        default=0.12,
+        help="Blend the next chunk if its first action differs from the last sent action by more than this",
+    )
+    parser.add_argument(
+        "--max-delta-per-step",
+        type=float,
+        default=0.0,
+        help="Optional final per-control-step action delta limit; <=0 disables this client-side limiter",
+    )
     return parser.parse_args()
 
 
@@ -87,6 +154,15 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError(f"Expected positive values for: {', '.join(invalid)}")
     if args.max_joint_delta < 0 or args.gripper_update_threshold < 0:
         raise ValueError("Action thresholds must be non-negative")
+    non_negative_values = {
+        "prefetch_remaining": args.prefetch_remaining,
+        "switch_blend_steps": args.switch_blend_steps,
+        "max_switch_delta": args.max_switch_delta,
+        "max_delta_per_step": args.max_delta_per_step,
+    }
+    invalid = [name for name, value in non_negative_values.items() if value < 0]
+    if invalid:
+        raise ValueError(f"Expected non-negative values for: {', '.join(invalid)}")
 
 
 def main() -> None:
@@ -128,25 +204,71 @@ def main() -> None:
 
     action_chunk = np.empty((0, 14), dtype=np.float64)
     action_index = 0
+    next_chunk: np.ndarray | None = None
+    prefetch_future: Future | None = None
+    last_sent_action: np.ndarray | None = None
     period = 1.0 / args.control_hz
     deadline = time.monotonic()
     try:
         environment.reset()
-        for step in range(args.max_steps):
-            if action_index >= len(action_chunk):
-                response = policy.infer(environment.get_observation())
-                action_chunk = _extract_action_chunk(response, args.action_horizon)
-                action_index = 0
-                logging.info("Received %d actions at step %d", len(action_chunk), step)
+        with ThreadPoolExecutor(max_workers=1) as prefetch_executor:
+            for step in range(args.max_steps):
+                if prefetch_future is not None and prefetch_future.done():
+                    next_chunk = prefetch_future.result()
+                    prefetch_future = None
+                    logging.info("Prefetched %d actions at step %d", len(next_chunk), step)
 
-            environment.apply_action(action_chunk[action_index])
-            action_index += 1
-            deadline += period
-            remaining = deadline - time.monotonic()
-            if remaining > 0:
-                time.sleep(remaining)
-            else:
-                deadline = time.monotonic()
+                if action_index >= len(action_chunk):
+                    if next_chunk is not None:
+                        action_chunk = _smooth_chunk_boundary(
+                            next_chunk,
+                            last_sent_action,
+                            max_switch_delta=args.max_switch_delta,
+                            blend_steps=args.switch_blend_steps,
+                        )
+                        next_chunk = None
+                    else:
+                        action_chunk = _infer_action_chunk(policy, environment.get_observation(), args.action_horizon)
+                    action_index = 0
+                    logging.info("Received %d actions at step %d", len(action_chunk), step)
+
+                if action_index < len(action_chunk):
+                    remaining_actions = len(action_chunk) - action_index
+                    if (
+                        args.prefetch_remaining > 0
+                        and remaining_actions <= args.prefetch_remaining
+                        and prefetch_future is None
+                        and next_chunk is None
+                    ):
+                        observation = environment.get_observation()
+                        prefetch_future = prefetch_executor.submit(
+                            _infer_action_chunk,
+                            policy,
+                            observation,
+                            args.action_horizon,
+                        )
+                        logging.info(
+                            "Started action prefetch at step %d with %d actions remaining",
+                            step,
+                            remaining_actions,
+                        )
+
+                    action = _rate_limit_action(action_chunk[action_index], last_sent_action, args.max_delta_per_step)
+                    action_index += 1
+                elif last_sent_action is not None and prefetch_future is not None:
+                    logging.warning("Action chunk exhausted before prefetch finished; holding last action")
+                    action = last_sent_action.copy()
+                else:
+                    action = _infer_action_chunk(policy, environment.get_observation(), args.action_horizon)[0]
+
+                environment.apply_action(action)
+                last_sent_action = action.copy()
+                deadline += period
+                remaining = deadline - time.monotonic()
+                if remaining > 0:
+                    time.sleep(remaining)
+                else:
+                    deadline = time.monotonic()
     except KeyboardInterrupt:
         logging.info("Interrupted by user")
     finally:

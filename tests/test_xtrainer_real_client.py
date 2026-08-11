@@ -50,6 +50,39 @@ class ActionChunkTest(unittest.TestCase):
         with self.assertRaises(KeyError):
             self.client._extract_action_chunk({}, 25)
 
+    def test_rate_limits_action_delta(self) -> None:
+        last_action = np.zeros(14)
+        action = np.ones(14)
+
+        limited = self.client._rate_limit_action(action, last_action, 0.25)
+
+        np.testing.assert_allclose(limited, np.full(14, 0.25))
+
+    def test_boundary_smoothing_keeps_small_delta(self) -> None:
+        chunk = np.full((3, 14), 0.05)
+        smoothed = self.client._smooth_chunk_boundary(
+            chunk,
+            np.zeros(14),
+            max_switch_delta=0.1,
+            blend_steps=2,
+        )
+
+        np.testing.assert_allclose(smoothed, chunk)
+
+    def test_boundary_smoothing_blends_large_delta(self) -> None:
+        chunk = np.ones((4, 14))
+        smoothed = self.client._smooth_chunk_boundary(
+            chunk,
+            np.zeros(14),
+            max_switch_delta=0.1,
+            blend_steps=3,
+        )
+
+        np.testing.assert_allclose(smoothed[0], np.full(14, 0.25))
+        np.testing.assert_allclose(smoothed[1], np.full(14, 0.5))
+        np.testing.assert_allclose(smoothed[2], np.full(14, 0.75))
+        np.testing.assert_allclose(smoothed[3], np.ones(14))
+
 
 if __name__ == "__main__":
     unittest.main()
