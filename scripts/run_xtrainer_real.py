@@ -1,5 +1,6 @@
 import argparse
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 import logging
 import sys
 import time
@@ -13,6 +14,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from deploy.websocket_client_policy import WebsocketClientPolicy
 from deploy.xtrainer_real import XTrainerRealEnvironment
+
+
+@dataclass
+class PrefetchResult:
+    actions: np.ndarray
+    request_step: int
 
 
 def _servo_range(value: str) -> tuple[int, int]:
@@ -82,6 +89,18 @@ def _infer_action_chunk(policy: WebsocketClientPolicy, observation: dict, action
     return _extract_action_chunk(response, action_horizon)
 
 
+def _infer_prefetch_chunk(
+    policy: WebsocketClientPolicy,
+    observation: dict,
+    action_horizon: int,
+    request_step: int,
+) -> PrefetchResult:
+    return PrefetchResult(
+        actions=_infer_action_chunk(policy, observation, action_horizon),
+        request_step=request_step,
+    )
+
+
 def _with_projected_state(observation: dict, projected_state: np.ndarray | None) -> dict:
     if projected_state is None:
         return observation
@@ -137,6 +156,15 @@ def _apply_prefetched_chunk(
     raise ValueError(f"Unsupported prefetch apply mode: {apply_mode}")
 
 
+def _align_prefetched_chunk(prefetched_chunk: np.ndarray, request_step: int, current_step: int) -> tuple[np.ndarray, int]:
+    elapsed_steps = max(int(current_step - request_step), 0)
+    if elapsed_steps <= 0:
+        return np.asarray(prefetched_chunk, dtype=np.float64).copy(), 0
+    if elapsed_steps >= len(prefetched_chunk):
+        return np.empty((0, prefetched_chunk.shape[1]), dtype=np.float64), elapsed_steps
+    return np.asarray(prefetched_chunk[elapsed_steps:], dtype=np.float64).copy(), elapsed_steps
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run LingBot-VLA 2.0 on an X-Trainer robot")
     parser.add_argument("--host", required=True, help="LingBot policy server address")
@@ -188,6 +216,11 @@ def parse_args() -> argparse.Namespace:
             "How to use a completed prefetch. 'replace' immediately discards the remaining current chunk "
             "and starts the new chunk; 'boundary' waits until the current chunk is exhausted."
         ),
+    )
+    parser.add_argument(
+        "--disable-prefetch-alignment",
+        action="store_true",
+        help="Do not drop elapsed actions from a completed prefetch before applying it",
     )
     parser.add_argument(
         "--switch-blend-steps",
@@ -288,9 +321,29 @@ def main() -> None:
         with ThreadPoolExecutor(max_workers=1) as prefetch_executor:
             for step in range(args.max_steps):
                 if prefetch_future is not None and prefetch_future.done():
-                    prefetched_chunk = prefetch_future.result()
+                    prefetch_result = prefetch_future.result()
                     prefetch_future = None
-                    logging.info("Prefetched %d actions at step %d", len(prefetched_chunk), step)
+                    prefetched_chunk = prefetch_result.actions
+                    skipped_actions = 0
+                    if not args.disable_prefetch_alignment:
+                        prefetched_chunk, skipped_actions = _align_prefetched_chunk(
+                            prefetched_chunk,
+                            prefetch_result.request_step,
+                            step,
+                        )
+                    logging.info(
+                        "Prefetched %d actions requested at step %d, applying at step %d after skipping %d elapsed actions",
+                        len(prefetched_chunk),
+                        prefetch_result.request_step,
+                        step,
+                        skipped_actions,
+                    )
+                    if len(prefetched_chunk) == 0:
+                        logging.warning(
+                            "Discarded stale prefetched chunk requested at step %d; no aligned actions remain",
+                            prefetch_result.request_step,
+                        )
+                        continue
                     action_chunk, action_index, next_chunk, discarded_actions = _apply_prefetched_chunk(
                         action_chunk,
                         action_index,
@@ -348,10 +401,11 @@ def main() -> None:
                                     state_delta,
                                 )
                         prefetch_future = prefetch_executor.submit(
-                            _infer_action_chunk,
+                            _infer_prefetch_chunk,
                             policy,
                             observation,
                             args.action_horizon,
+                            step,
                         )
                         logging.info(
                             "Started action prefetch at step %d with %d actions remaining",

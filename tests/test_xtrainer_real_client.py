@@ -160,6 +160,42 @@ class ActionChunkTest(unittest.TestCase):
         np.testing.assert_allclose(next_chunk, prefetched)
         self.assertEqual(discarded, 0)
 
+    def test_align_prefetched_chunk_skips_elapsed_actions(self) -> None:
+        prefetched = np.arange(5 * 14, dtype=np.float64).reshape(5, 14)
+
+        aligned, skipped = self.client._align_prefetched_chunk(
+            prefetched,
+            request_step=10,
+            current_step=12,
+        )
+
+        np.testing.assert_allclose(aligned, prefetched[2:])
+        self.assertEqual(skipped, 2)
+
+    def test_align_prefetched_chunk_keeps_future_or_same_step_actions(self) -> None:
+        prefetched = np.arange(3 * 14, dtype=np.float64).reshape(3, 14)
+
+        aligned, skipped = self.client._align_prefetched_chunk(
+            prefetched,
+            request_step=10,
+            current_step=10,
+        )
+
+        np.testing.assert_allclose(aligned, prefetched)
+        self.assertEqual(skipped, 0)
+
+    def test_align_prefetched_chunk_returns_empty_when_stale(self) -> None:
+        prefetched = np.arange(3 * 14, dtype=np.float64).reshape(3, 14)
+
+        aligned, skipped = self.client._align_prefetched_chunk(
+            prefetched,
+            request_step=10,
+            current_step=15,
+        )
+
+        self.assertEqual(aligned.shape, (0, 14))
+        self.assertEqual(skipped, 5)
+
 
 if __name__ == "__main__":
     unittest.main()
