@@ -82,6 +82,61 @@ def _infer_action_chunk(policy: WebsocketClientPolicy, observation: dict, action
     return _extract_action_chunk(response, action_horizon)
 
 
+def _with_projected_state(observation: dict, projected_state: np.ndarray | None) -> dict:
+    if projected_state is None:
+        return observation
+    projected = dict(observation)
+    projected["observation.state"] = np.asarray(projected_state, dtype=np.float32).copy()
+    return projected
+
+
+def _project_chunk_end_state(
+    action_chunk: np.ndarray,
+    action_index: int,
+    last_sent_action: np.ndarray | None,
+    max_delta_per_step: float,
+) -> np.ndarray | None:
+    if action_index >= len(action_chunk):
+        return last_sent_action.copy() if last_sent_action is not None else None
+
+    if max_delta_per_step <= 0 or last_sent_action is None:
+        return np.asarray(action_chunk[-1], dtype=np.float64).copy()
+
+    projected = np.asarray(last_sent_action, dtype=np.float64).copy()
+    for action in action_chunk[action_index:]:
+        projected = _rate_limit_action(action, projected, max_delta_per_step)
+    return projected
+
+
+def _apply_prefetched_chunk(
+    action_chunk: np.ndarray,
+    action_index: int,
+    next_chunk: np.ndarray | None,
+    prefetched_chunk: np.ndarray,
+    last_sent_action: np.ndarray | None,
+    *,
+    apply_mode: str,
+    max_switch_delta: float,
+    blend_steps: int,
+) -> tuple[np.ndarray, int, np.ndarray | None, int]:
+    if apply_mode == "replace":
+        discarded_actions = max(len(action_chunk) - action_index, 0)
+        return (
+            _smooth_chunk_boundary(
+                prefetched_chunk,
+                last_sent_action,
+                max_switch_delta=max_switch_delta,
+                blend_steps=blend_steps,
+            ),
+            0,
+            None,
+            discarded_actions,
+        )
+    if apply_mode == "boundary":
+        return action_chunk, action_index, prefetched_chunk, 0
+    raise ValueError(f"Unsupported prefetch apply mode: {apply_mode}")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run LingBot-VLA 2.0 on an X-Trainer robot")
     parser.add_argument("--host", required=True, help="LingBot policy server address")
@@ -114,6 +169,25 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=8,
         help="Start background inference when this many actions remain in the current chunk; 0 disables prefetch",
+    )
+    parser.add_argument(
+        "--prefetch-state-mode",
+        choices=("chunk-end", "current"),
+        default="current",
+        help=(
+            "State used in the observation sent by async prefetch. "
+            "'chunk-end' replaces observation.state with the planned end state of the current chunk; "
+            "'current' keeps the sampled state unchanged."
+        ),
+    )
+    parser.add_argument(
+        "--prefetch-apply-mode",
+        choices=("replace", "boundary"),
+        default="replace",
+        help=(
+            "How to use a completed prefetch. 'replace' immediately discards the remaining current chunk "
+            "and starts the new chunk; 'boundary' waits until the current chunk is exhausted."
+        ),
     )
     parser.add_argument(
         "--switch-blend-steps",
@@ -214,9 +288,25 @@ def main() -> None:
         with ThreadPoolExecutor(max_workers=1) as prefetch_executor:
             for step in range(args.max_steps):
                 if prefetch_future is not None and prefetch_future.done():
-                    next_chunk = prefetch_future.result()
+                    prefetched_chunk = prefetch_future.result()
                     prefetch_future = None
-                    logging.info("Prefetched %d actions at step %d", len(next_chunk), step)
+                    logging.info("Prefetched %d actions at step %d", len(prefetched_chunk), step)
+                    action_chunk, action_index, next_chunk, discarded_actions = _apply_prefetched_chunk(
+                        action_chunk,
+                        action_index,
+                        next_chunk,
+                        prefetched_chunk,
+                        last_sent_action,
+                        apply_mode=args.prefetch_apply_mode,
+                        max_switch_delta=args.max_switch_delta,
+                        blend_steps=args.switch_blend_steps,
+                    )
+                    if args.prefetch_apply_mode == "replace":
+                        logging.info(
+                            "Replaced current action chunk at step %d; discarded %d remaining actions",
+                            step,
+                            discarded_actions,
+                        )
 
                 if action_index >= len(action_chunk):
                     if next_chunk is not None:
@@ -241,6 +331,22 @@ def main() -> None:
                         and next_chunk is None
                     ):
                         observation = environment.get_observation()
+                        if args.prefetch_state_mode == "chunk-end":
+                            sampled_state = np.asarray(observation.get("observation.state"), dtype=np.float64)
+                            projected_state = _project_chunk_end_state(
+                                action_chunk,
+                                action_index,
+                                last_sent_action,
+                                args.max_delta_per_step,
+                            )
+                            observation = _with_projected_state(observation, projected_state)
+                            if projected_state is not None:
+                                state_delta = float(np.max(np.abs(projected_state - sampled_state)))
+                                logging.debug(
+                                    "Using projected chunk-end state for prefetch at step %d; max state delta %.4f",
+                                    step,
+                                    state_delta,
+                                )
                         prefetch_future = prefetch_executor.submit(
                             _infer_action_chunk,
                             policy,

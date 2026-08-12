@@ -83,6 +83,83 @@ class ActionChunkTest(unittest.TestCase):
         np.testing.assert_allclose(smoothed[2], np.full(14, 0.75))
         np.testing.assert_allclose(smoothed[3], np.ones(14))
 
+    def test_projected_state_uses_chunk_end_without_rate_limit(self) -> None:
+        chunk = np.arange(4 * 14, dtype=np.float64).reshape(4, 14)
+
+        projected = self.client._project_chunk_end_state(
+            chunk,
+            action_index=1,
+            last_sent_action=np.zeros(14),
+            max_delta_per_step=0.0,
+        )
+
+        np.testing.assert_allclose(projected, chunk[-1])
+
+    def test_projected_state_respects_rate_limit(self) -> None:
+        chunk = np.vstack([np.full(14, 1.0), np.full(14, 2.0), np.full(14, 3.0)])
+
+        projected = self.client._project_chunk_end_state(
+            chunk,
+            action_index=0,
+            last_sent_action=np.zeros(14),
+            max_delta_per_step=0.5,
+        )
+
+        np.testing.assert_allclose(projected, np.full(14, 1.5))
+
+    def test_projected_state_replaces_observation_state_copy(self) -> None:
+        observation = {
+            "observation.state": np.zeros(14, dtype=np.float32),
+            "task": "test",
+        }
+        projected = np.ones(14, dtype=np.float64)
+
+        updated = self.client._with_projected_state(observation, projected)
+
+        self.assertIsNot(updated, observation)
+        np.testing.assert_allclose(updated["observation.state"], np.ones(14, dtype=np.float32))
+        np.testing.assert_allclose(observation["observation.state"], np.zeros(14, dtype=np.float32))
+
+    def test_prefetched_chunk_replace_discards_current_remainder(self) -> None:
+        current = np.zeros((5, 14), dtype=np.float64)
+        prefetched = np.ones((3, 14), dtype=np.float64)
+
+        action_chunk, action_index, next_chunk, discarded = self.client._apply_prefetched_chunk(
+            current,
+            action_index=2,
+            next_chunk=None,
+            prefetched_chunk=prefetched,
+            last_sent_action=np.ones(14),
+            apply_mode="replace",
+            max_switch_delta=0.0,
+            blend_steps=0,
+        )
+
+        np.testing.assert_allclose(action_chunk, prefetched)
+        self.assertEqual(action_index, 0)
+        self.assertIsNone(next_chunk)
+        self.assertEqual(discarded, 3)
+
+    def test_prefetched_chunk_boundary_keeps_current_until_exhausted(self) -> None:
+        current = np.zeros((5, 14), dtype=np.float64)
+        prefetched = np.ones((3, 14), dtype=np.float64)
+
+        action_chunk, action_index, next_chunk, discarded = self.client._apply_prefetched_chunk(
+            current,
+            action_index=2,
+            next_chunk=None,
+            prefetched_chunk=prefetched,
+            last_sent_action=np.ones(14),
+            apply_mode="boundary",
+            max_switch_delta=0.0,
+            blend_steps=0,
+        )
+
+        np.testing.assert_allclose(action_chunk, current)
+        self.assertEqual(action_index, 2)
+        np.testing.assert_allclose(next_chunk, prefetched)
+        self.assertEqual(discarded, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
