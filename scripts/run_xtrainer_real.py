@@ -259,6 +259,12 @@ def parse_args() -> argparse.Namespace:
         help="Number of post-latency actions searched when --prefetch-alignment-mode=nearest",
     )
     parser.add_argument(
+        "--min-prefetch-actions",
+        type=int,
+        default=12,
+        help="Discard an aligned prefetched chunk if fewer than this many actions remain",
+    )
+    parser.add_argument(
         "--switch-blend-steps",
         type=int,
         default=5,
@@ -303,6 +309,7 @@ def _validate_args(args: argparse.Namespace) -> None:
         "max_switch_delta": args.max_switch_delta,
         "max_delta_per_step": args.max_delta_per_step,
         "prefetch_alignment_search": args.prefetch_alignment_search,
+        "min_prefetch_actions": args.min_prefetch_actions,
     }
     invalid = [name for name, value in non_negative_values.items() if value < 0]
     if invalid:
@@ -384,6 +391,14 @@ def main() -> None:
                             prefetch_result.request_step,
                         )
                         continue
+                    if len(prefetched_chunk) < args.min_prefetch_actions:
+                        logging.warning(
+                            "Discarded short prefetched chunk requested at step %d; only %d aligned actions remain (< %d)",
+                            prefetch_result.request_step,
+                            len(prefetched_chunk),
+                            args.min_prefetch_actions,
+                        )
+                        continue
                     action_chunk, action_index, next_chunk, discarded_actions = _apply_prefetched_chunk(
                         action_chunk,
                         action_index,
@@ -410,6 +425,20 @@ def main() -> None:
                             blend_steps=args.switch_blend_steps,
                         )
                         next_chunk = None
+                    elif prefetch_future is not None:
+                        if last_sent_action is None:
+                            logging.warning("Action chunk exhausted while prefetch is running and no last action is available")
+                            continue
+                        logging.warning("Action chunk exhausted before prefetch finished; holding last action")
+                        action = last_sent_action.copy()
+                        environment.apply_action(action)
+                        deadline += period
+                        remaining = deadline - time.monotonic()
+                        if remaining > 0:
+                            time.sleep(remaining)
+                        else:
+                            deadline = time.monotonic()
+                        continue
                     else:
                         action_chunk = _infer_action_chunk(policy, environment.get_observation(), args.action_horizon)
                     action_index = 0
