@@ -156,13 +156,34 @@ def _apply_prefetched_chunk(
     raise ValueError(f"Unsupported prefetch apply mode: {apply_mode}")
 
 
-def _align_prefetched_chunk(prefetched_chunk: np.ndarray, request_step: int, current_step: int) -> tuple[np.ndarray, int]:
+def _align_prefetched_chunk(
+    prefetched_chunk: np.ndarray,
+    request_step: int,
+    current_step: int,
+    last_sent_action: np.ndarray | None = None,
+    *,
+    mode: str = "nearest",
+    search_window: int = 12,
+) -> tuple[np.ndarray, int]:
     elapsed_steps = max(int(current_step - request_step), 0)
-    if elapsed_steps <= 0:
-        return np.asarray(prefetched_chunk, dtype=np.float64).copy(), 0
     if elapsed_steps >= len(prefetched_chunk):
         return np.empty((0, prefetched_chunk.shape[1]), dtype=np.float64), elapsed_steps
-    return np.asarray(prefetched_chunk[elapsed_steps:], dtype=np.float64).copy(), elapsed_steps
+
+    start_index = elapsed_steps
+    if mode == "elapsed":
+        pass
+    elif mode == "nearest":
+        if last_sent_action is not None and len(prefetched_chunk) > 0:
+            search_start = elapsed_steps
+            search_end = min(len(prefetched_chunk), elapsed_steps + max(search_window, 1) + 1)
+            candidates = np.asarray(prefetched_chunk[search_start:search_end], dtype=np.float64)
+            previous = np.asarray(last_sent_action, dtype=np.float64).reshape(1, -1)
+            distances = np.max(np.abs(candidates - previous), axis=1)
+            start_index = search_start + int(np.argmin(distances))
+    else:
+        raise ValueError(f"Unsupported prefetch alignment mode: {mode}")
+
+    return np.asarray(prefetched_chunk[start_index:], dtype=np.float64).copy(), start_index
 
 
 def parse_args() -> argparse.Namespace:
@@ -223,6 +244,21 @@ def parse_args() -> argparse.Namespace:
         help="Do not drop elapsed actions from a completed prefetch before applying it",
     )
     parser.add_argument(
+        "--prefetch-alignment-mode",
+        choices=("nearest", "elapsed"),
+        default="nearest",
+        help=(
+            "How to align a returned prefetch. 'elapsed' drops actions by elapsed control steps; "
+            "'nearest' additionally starts from the action closest to the last sent action."
+        ),
+    )
+    parser.add_argument(
+        "--prefetch-alignment-search",
+        type=int,
+        default=12,
+        help="Number of post-latency actions searched when --prefetch-alignment-mode=nearest",
+    )
+    parser.add_argument(
         "--switch-blend-steps",
         type=int,
         default=5,
@@ -266,6 +302,7 @@ def _validate_args(args: argparse.Namespace) -> None:
         "switch_blend_steps": args.switch_blend_steps,
         "max_switch_delta": args.max_switch_delta,
         "max_delta_per_step": args.max_delta_per_step,
+        "prefetch_alignment_search": args.prefetch_alignment_search,
     }
     invalid = [name for name, value in non_negative_values.items() if value < 0]
     if invalid:
@@ -330,6 +367,9 @@ def main() -> None:
                             prefetched_chunk,
                             prefetch_result.request_step,
                             step,
+                            last_sent_action,
+                            mode=args.prefetch_alignment_mode,
+                            search_window=args.prefetch_alignment_search,
                         )
                     logging.info(
                         "Prefetched %d actions requested at step %d, applying at step %d after skipping %d elapsed actions",

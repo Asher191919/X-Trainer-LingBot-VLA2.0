@@ -167,6 +167,7 @@ class ActionChunkTest(unittest.TestCase):
             prefetched,
             request_step=10,
             current_step=12,
+            mode="elapsed",
         )
 
         np.testing.assert_allclose(aligned, prefetched[2:])
@@ -179,6 +180,7 @@ class ActionChunkTest(unittest.TestCase):
             prefetched,
             request_step=10,
             current_step=10,
+            mode="elapsed",
         )
 
         np.testing.assert_allclose(aligned, prefetched)
@@ -191,10 +193,34 @@ class ActionChunkTest(unittest.TestCase):
             prefetched,
             request_step=10,
             current_step=15,
+            mode="elapsed",
         )
 
         self.assertEqual(aligned.shape, (0, 14))
         self.assertEqual(skipped, 5)
+
+    def test_align_prefetched_chunk_nearest_searches_after_elapsed_step(self) -> None:
+        prefetched = np.vstack(
+            [
+                np.full(14, 0.0),
+                np.full(14, 0.5),
+                np.full(14, 1.0),
+                np.full(14, 0.2),
+                np.full(14, 0.9),
+            ]
+        )
+
+        aligned, skipped = self.client._align_prefetched_chunk(
+            prefetched,
+            request_step=10,
+            current_step=12,
+            last_sent_action=np.full(14, 0.2),
+            mode="nearest",
+            search_window=2,
+        )
+
+        np.testing.assert_allclose(aligned, prefetched[3:])
+        self.assertEqual(skipped, 3)
 
 
 if __name__ == "__main__":
